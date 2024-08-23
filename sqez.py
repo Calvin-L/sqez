@@ -217,7 +217,7 @@ class Connection(_Resource):
                 raise Exception(f"Illegal connection state {self._state}")
 
     @property
-    def rowcount(self) -> int:
+    def _rowcount(self) -> int:
         return self._cursor.rowcount
 
     def _rollback(self) -> None:
@@ -329,7 +329,7 @@ class WriteTransaction(Transaction):
         start = time.time()
         assert self._connection._conn.in_transaction
         self._connection._exec(sql, argv) # don't need _exc_lock; holding exclusive _txn_lock
-        result: int = self._connection.rowcount
+        result: int = self._connection._rowcount
         _logger.debug(f"Executed in {int((time.time() - start) * 1000)}ms")
         return result
 
