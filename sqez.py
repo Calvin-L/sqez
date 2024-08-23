@@ -94,7 +94,7 @@ class _Resource(ABC):
 
 
 class Connection(_Resource):
-    __slots__ = ("_txn_lock", "_exec_lock", "_conn", "_cursor")
+    __slots__ = ("_txn_lock", "_exec_lock", "_state", "_conn", "_cursor")
 
     IDLE         = 0
     READ_LOCKED  = 1
