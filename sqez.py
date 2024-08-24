@@ -68,6 +68,8 @@ class _FairRWLock:
             q.pop(0)
             self._mode = desired_mode
             self._count += 1
+            if desired_mode == _READ_MODE:
+                cv.notify_all() # Some other reader might now be at the head of the line
 
     def release(self) -> _IDLE_OR_READ_OR_WRITE:
         cv = self._cv
@@ -75,8 +77,8 @@ class _FairRWLock:
             self._count -= 1
             if self._count == 0:
                 self._mode = _IDLE_MODE
+                cv.notify_all()
             result = self._mode
-            cv.notify_all()
         return result
 
 

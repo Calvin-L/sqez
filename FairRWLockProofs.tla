@@ -19,15 +19,18 @@ THEOREM TypeCorrect == Spec => []TypeOK_Ind
             <3> SUFFICES ASSUME TypeOK_Ind, NEW c \in Clients, EnterCS(c) PROVE TypeOK_Ind' OBVIOUS
             <3>a. CASE lock_queue[1] = c /\ SafeToEnter(IF c \in Writers THEN "write" ELSE "read")
                 <4>a. c \notin {c \in Clients: pc[c] = "cs"} BY DEF EnterCS
-                <4>b. {c \in Clients: pc[c] = "cs"}' = {c \in Clients: pc[c] = "cs"} \union {c} BY <3>a DEF EnterCS, TypeOK_Ind, TypeOK
+                <4>b. {c \in Clients: pc[c] = "cs"}' = {c \in Clients: pc[c] = "cs"} \union {c} BY <3>a DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
                 <4>c. IsFiniteSet({c \in Clients: pc[c] = "cs"})' /\ Cardinality({c \in Clients: pc[c] = "cs"}') = Cardinality({c \in Clients: pc[c] = "cs"}) + 1
                       BY <4>a, <4>b, FS_AddElement DEF TypeOK_Ind
-                <4> QED BY <4>c DEF EnterCS, TypeOK_Ind, TypeOK
+                <4> pc' \in [Clients -> {"idle", "wait", "sleep", "cs"}] BY <4>c DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
+                <4> lock_count' \in Nat BY <4>c DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
+                <4> lock_count' = lock_count + 1 BY <4>c DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
+                <4> QED BY <4>c DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
             <3>b. CASE ~(lock_queue[1] = c /\ SafeToEnter(IF c \in Writers THEN "write" ELSE "read")) BY <3>b DEF EnterCS, TypeOK_Ind, TypeOK
             <3> QED BY <3>a, <3>b
         <2>c. (TypeOK_Ind /\ \E c \in Clients: Release(c)) => TypeOK_Ind'
             <3> SUFFICES ASSUME TypeOK_Ind, NEW c \in Clients, Release(c) PROVE TypeOK_Ind' OBVIOUS
-            <3>x. {c \in Clients: pc[c] = "cs"}' = ({c \in Clients: pc[c] = "cs"} \ {c}) BY DEF Release
+            <3>x. {c \in Clients: pc[c] = "cs"}' = ({c \in Clients: pc[c] = "cs"} \ {c}) BY DEF Release, NotifyAll, TypeOK_Ind, TypeOK
             <3>y. c \in {c \in Clients: pc[c] = "cs"} BY DEF Release
             <3>a. Cardinality({c \in Clients: pc[c] = "cs"})' = Cardinality({c \in Clients: pc[c] = "cs"}) - 1
                   BY <3>x, <3>y, FS_RemoveElement DEF TypeOK_Ind
@@ -36,7 +39,7 @@ THEOREM TypeCorrect == Spec => []TypeOK_Ind
             <3>b. lock_count' = Cardinality({c \in Clients: pc[c] = "cs"})'
                   BY <3>x, <3>y, <3>a DEF Release, TypeOK_Ind
             <3>f. lock_count' \in Nat BY <3>b, <3>c, FS_CardinalityType
-            <3> QED BY <3>a, <3>c, <3>f DEF Release, TypeOK_Ind, TypeOK
+            <3> QED BY <3>a, <3>c, <3>f DEF Release, NotifyAll, TypeOK_Ind, TypeOK
         <2>d. (TypeOK_Ind /\ UNCHANGED vars) => TypeOK_Ind' BY DEF vars, TypeOK_Ind, TypeOK
         <2> QED BY <2>a, <2>b, <2>c, <2>d DEF Next
     <1> QED BY PTL, <1>a, <1>b DEF Spec
@@ -75,8 +78,8 @@ THEOREM Safe == Spec => []MutualExclusion
                 <4> QED BY <2>x, <4>a, <4>b, <4>c DEF TypeOK_Ind, TypeOK
             <3>b. CASE c \notin Writers
                 <4> c \in Readers BY <3>b DEF Clients
-                <4>a. CASE lock_mode = "idle" BY <2>x, <3>b, <4>a DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                <4>b. CASE lock_mode = "read" BY <2>x, <3>b, <4>b DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
+                <4>a. CASE lock_mode = "idle" BY <2>x, <3>b, <4>a DEF EnterCS, NotifyAll, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
+                <4>b. CASE lock_mode = "read" BY <2>x, <3>b, <4>b DEF EnterCS, NotifyAll, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
                 <4>c. CASE lock_mode = "write"
                     <5>a. UNCHANGED lock_mode BY <2>x, <3>b, <4>c DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
                     <5> QED BY <2>x, <3>b, <4>c, <5>a DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
@@ -86,11 +89,11 @@ THEOREM Safe == Spec => []MutualExclusion
             <3> SUFFICES ASSUME LockModeCorrect, NEW c \in Clients, Release(c) PROVE LockModeCorrect' BY <2>c
             <3>b. CASE lock_mode = "idle" BY <3>b DEF Release, LockModeCorrect
             <3>c. CASE lock_mode = "read"
-                <4>a. CASE lock_count = 1 BY <2>x, <4>a, FS_Singleton DEF Release, LockModeCorrect, TypeOK_Ind, TypeOK
-                <4>b. CASE lock_count > 1 BY <2>x, <3>c, <4>b DEF Release, LockModeCorrect, TypeOK_Ind, TypeOK
+                <4>a. CASE lock_count = 1 BY <2>x, <4>a, FS_Singleton DEF Release, NotifyAll, LockModeCorrect, TypeOK_Ind, TypeOK
+                <4>b. CASE lock_count > 1 BY <2>x, <3>c, <4>b DEF Release, NotifyAll, LockModeCorrect, TypeOK_Ind, TypeOK
                 <4>c. CASE lock_count < 1 BY <2>x, <4>c, FS_EmptySet DEF Release, TypeOK_Ind, TypeOK
                 <4> QED BY <2>x, <4>a, <4>b, <4>c DEF TypeOK_Ind, TypeOK
-            <3>d. CASE lock_mode = "write" BY <3>d, <2>x, FS_Singleton DEF Release, LockModeCorrect, TypeOK_Ind, TypeOK
+            <3>d. CASE lock_mode = "write" BY <3>d, <2>x, FS_Singleton DEF Release, NotifyAll, LockModeCorrect, TypeOK_Ind, TypeOK
             <3> QED BY <2>x, <3>b, <3>c, <3>d DEF TypeOK_Ind, TypeOK
         <2>d. CASE UNCHANGED vars BY <2>d DEF vars, LockModeCorrect
         <2> QED BY <2>a, <2>b, <2>c, <2>d DEF Next
