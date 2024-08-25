@@ -299,6 +299,7 @@ class ReadTransaction(Transaction):
     def close(self) -> None:
         if self._state != Transaction.CLOSED:
             self._state = Transaction.CLOSED
+            # Subtlety ahead!  See note in WriteTransaction.__init__().
             with self._connection._exec_lock:
                 if self._connection._txn_lock.release() == _IDLE_MODE:
                     self._connection._rollback()
@@ -318,7 +319,19 @@ class WriteTransaction(Transaction):
         # case WE are responsible for releasing the lock,
         # since this object has not been returned to the caller yet.
         try:
-            self._connection._begin_immediate()
+            # Subtlety ahead!  Most things that a WriteTransaction does do not
+            # need to be guarded by _exec_lock, since by holding _txn_lock we
+            # are already blocking all other concurrent access.  The ONE
+            # exception is this initial statement, which may need to
+            # synchronize with rollback from the last ReadTransaction.  When
+            # a ReadTransaction closes, it FIRST releases _txn_lock and THEN
+            # decides whether to roll back, all while holding _exec_lock.
+            # (It has to be done in that order because the reader can't know
+            # whether to close the transaction until it has gotten a return
+            # value from releasing _txn_lock.)  So, we need to acquire
+            # _exec_lock to ensure we've waited for that process to complete.
+            with self._connection._exec_lock:
+                self._connection._begin_immediate()
             _logger.debug(f"Opened WriteTransaction in {int((time.time() - start) * 1000)}ms")
         except:
             self._connection._txn_lock.release()
