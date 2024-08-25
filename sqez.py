@@ -299,10 +299,13 @@ class ReadTransaction(Transaction):
     def close(self) -> None:
         if self._state != Transaction.CLOSED:
             self._state = Transaction.CLOSED
+            _logger.debug("Closing ReadTransaction...")
+            start = time.time()
             # Subtlety ahead!  See note in WriteTransaction.__init__().
             with self._connection._exec_lock:
                 if self._connection._txn_lock.release() == _IDLE_MODE:
                     self._connection._rollback()
+            _logger.debug("Closed in %ims", (time.time() - start) * 1000)
 
 
 class WriteTransaction(Transaction):
@@ -368,7 +371,7 @@ class WriteTransaction(Transaction):
     def close(self) -> None:
         try:
             if self._state in (Transaction.OPEN_RW, Transaction.COMMIT_AMBIGUOUS):
-                _logger.debug("Rolling back open transaction...")
+                _logger.debug("Rolling back WriteTransaction...")
                 start = time.time()
                 self._connection._rollback() # don't need _exc_lock; holding exclusive _txn_lock
                 _logger.debug("Rolled back in %ims", (time.time() - start) * 1000)
