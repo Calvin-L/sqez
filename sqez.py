@@ -106,7 +106,7 @@ class Connection(_Resource):
 
     def __init__(self, filename: Union[str, PurePath]):
         super().__init__()
-        _logger.debug(f"Opening connection to sqlite db {filename!r}...")
+        _logger.debug("Opening connection to sqlite db %s...", filename)
         start = time.time()
         assert sqlite3.threadsafety > 0, "sqlite3 module is not safe to share between threads"
         self._txn_lock = _FairRWLock()
@@ -149,7 +149,7 @@ class Connection(_Resource):
             # since this object has not been returned to the caller yet.
             try:
                 self._cursor.execute("PRAGMA journal_mode=WAL")
-                _logger.debug(f"Opened connection in {int((time.time() - start) * 1000)}ms")
+                _logger.debug("Opened connection in %ims", (time.time() - start) * 1000)
             except:
                 self._cursor.close()
                 raise
@@ -263,7 +263,7 @@ class Transaction(_Resource):
             raise Exception("Transaction is not open")
         if sql[:6].upper() != "SELECT":
             raise Exception(f"{sql!r} is not a SELECT statement")
-        _logger.debug(f"Selecting {sql!r}")
+        _logger.debug("Selecting %r", sql)
         start = time.time()
         result: list[tuple[Any, ...]]
 
@@ -271,7 +271,7 @@ class Transaction(_Resource):
             assert self._connection._conn.in_transaction
             result = self._connection._exec(sql, argv)
 
-        _logger.debug(f"Executed in {int((time.time() - start) * 1000)}ms")
+        _logger.debug("Executed in %ims", (time.time() - start) * 1000)
         return result
 
 
@@ -279,7 +279,7 @@ class ReadTransaction(Transaction):
     __slots__ = ()
 
     def __init__(self, connection: Connection) -> None:
-        _logger.debug(f"Opening ReadTransaction...")
+        _logger.debug("Opening ReadTransaction...")
         start = time.time()
         super().__init__(connection, Transaction.OPEN_RO)
 
@@ -291,7 +291,7 @@ class ReadTransaction(Transaction):
         try:
             with self._connection._exec_lock:
                 self._connection._begin_deferred_if_not_in_txn()
-            _logger.debug(f"Opened ReadTransaction in {int((time.time() - start) * 1000)}ms")
+            _logger.debug("Opened ReadTransaction in %ims", (time.time() - start) * 1000)
         except:
             self._connection._txn_lock.release()
             raise
@@ -309,7 +309,7 @@ class WriteTransaction(Transaction):
     __slots__ = ()
 
     def __init__(self, connection: Connection) -> None:
-        _logger.debug(f"Opening WriteTransaction...")
+        _logger.debug("Opening WriteTransaction...")
         start = time.time()
         super().__init__(connection, Transaction.OPEN_RW)
 
@@ -332,7 +332,7 @@ class WriteTransaction(Transaction):
             # _exec_lock to ensure we've waited for that process to complete.
             with self._connection._exec_lock:
                 self._connection._begin_immediate()
-            _logger.debug(f"Opened WriteTransaction in {int((time.time() - start) * 1000)}ms")
+            _logger.debug("Opened WriteTransaction in %ims", (time.time() - start) * 1000)
         except:
             self._connection._txn_lock.release()
             raise
@@ -340,23 +340,23 @@ class WriteTransaction(Transaction):
     def exec(self, sql: str, argv: tuple[Any, ...] = ()) -> int:
         if self._state not in Transaction.OPEN:
             raise Exception("Transaction is not open")
-        _logger.debug(f"Executing {sql!r}...")
+        _logger.debug("Executing %r...", sql)
         start = time.time()
         assert self._connection._conn.in_transaction
         self._connection._exec(sql, argv) # don't need _exc_lock; holding exclusive _txn_lock
         result: int = self._connection._rowcount
-        _logger.debug(f"Executed in {int((time.time() - start) * 1000)}ms")
+        _logger.debug("Executed in %ims", (time.time() - start) * 1000)
         return result
 
     def commit(self) -> None:
         if self._state not in Transaction.OPEN:
             raise Exception("Transaction is not open")
-        _logger.debug(f"Committing...")
+        _logger.debug("Committing...")
         start = time.time()
         self._state = Transaction.COMMIT_AMBIGUOUS
         self._connection._commit() # don't need _exc_lock; holding exclusive _txn_lock
         self._state = Transaction.COMMITTED
-        _logger.debug(f"Committed in {int((time.time() - start) * 1000)}ms")
+        _logger.debug("Committed in %ims", (time.time() - start) * 1000)
 
     def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Optional[TracebackType]) -> None:
         try:
@@ -368,10 +368,10 @@ class WriteTransaction(Transaction):
     def close(self) -> None:
         try:
             if self._state in (Transaction.OPEN_RW, Transaction.COMMIT_AMBIGUOUS):
-                _logger.debug(f"Rolling back open transaction...")
+                _logger.debug("Rolling back open transaction...")
                 start = time.time()
                 self._connection._rollback() # don't need _exc_lock; holding exclusive _txn_lock
-                _logger.debug(f"Rolled back in {int((time.time() - start) * 1000)}ms")
+                _logger.debug("Rolled back in %ims", (time.time() - start) * 1000)
         finally:
             if self._state != Transaction.CLOSED:
                 self._state = Transaction.CLOSED
