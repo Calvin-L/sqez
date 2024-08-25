@@ -1,2 +1,12 @@
+# Python
 __pycache__
 .mypy_cache
+
+# Test outputs
+*.sqlite
+
+# TLA+
+*_TTrace_*.tla
+*_TTrace_*.bin
+.tlacache
+states
