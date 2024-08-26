@@ -82,11 +82,3 @@ def test_concurrency2() -> None:
                         cv.wait()
                 tx.select("SELECT * FROM sqlite_schema")
         par(job, job, job)
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-    test_basics()
-    test_exception()
-    test_two_readonly()
-    test_concurrency1()
-    test_concurrency2()

@@ -1,9 +1,11 @@
 # Python
 __pycache__
 .mypy_cache
+/dist
 
 # Test outputs
 *.sqlite
+.pytest_cache
 
 # TLA+
 *_TTrace_*.tla

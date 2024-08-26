@@ -7,11 +7,11 @@ import logging
 import time
 
 import sqez
-from test import par
+from test_basics import par
 
 _logger = logging.getLogger(__name__)
 
-CONNECTIONS = 1
+CONNECTIONS = 2
 WRITERS_PER_CONNECTION = 2
 READERS_PER_CONNECTION = 2
 DB_FILE = PurePath(os.path.abspath(__file__)).parent / "test_strict_serializability.sqlite"
@@ -50,7 +50,7 @@ class SharedState:
         with self._lock:
             self._overestimate = max(self._overestimate, val)
 
-def run() -> None:
+def test_strict_serializability() -> None:
     try:
         os.unlink(DB_FILE)
     except FileNotFoundError:
@@ -110,7 +110,3 @@ def writer(st: SharedState, conn: sqez.Connection) -> None:
     except:
         st.stop()
         _logger.exception("writer")
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARN, format="%(levelname)s:%(name)s:%(threadName)s - %(message)s")
-    run()

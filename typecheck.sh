@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec mypy --strict *.py
+exec mypy --strict src tests
