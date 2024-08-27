@@ -5,6 +5,7 @@ import os
 from pathlib import PurePath
 import logging
 import time
+import tempfile
 
 import sqez
 from test_basics import par
@@ -14,14 +15,18 @@ _logger = logging.getLogger(__name__)
 CONNECTIONS = 2
 WRITERS_PER_CONNECTION = 2
 READERS_PER_CONNECTION = 2
-DB_FILE = PurePath(os.path.abspath(__file__)).parent / "test_strict_serializability.sqlite"
 
 class SharedState:
-    def __init__(self) -> None:
+    def __init__(self, db_file: PurePath) -> None:
+        self._db_file = db_file
         self._lock = threading.Lock()
         self._running = True
         self._underestimate = 0
         self._overestimate = 0
+
+    @property
+    def db_file(self) -> PurePath:
+        return self._db_file
 
     @property
     def running(self) -> bool:
@@ -51,23 +56,21 @@ class SharedState:
             self._overestimate = max(self._overestimate, val)
 
 def test_strict_serializability() -> None:
-    try:
-        os.unlink(DB_FILE)
-    except FileNotFoundError:
-        pass
+    with tempfile.TemporaryDirectory() as d:
+        db_file = PurePath(d) / "db.sqlite"
 
-    with sqez.Connection(DB_FILE) as conn:
-        with sqez.WriteTransaction(conn) as tx:
-            tx.exec("CREATE TABLE counter (value INT)")
-            tx.exec("INSERT INTO counter (value) VALUES (0)")
+        with sqez.Connection(db_file) as conn:
+            with sqez.WriteTransaction(conn) as tx:
+                tx.exec("CREATE TABLE counter (value INT)")
+                tx.exec("INSERT INTO counter (value) VALUES (0)")
 
-    st = SharedState()
+        st = SharedState(db_file)
 
-    par(*([lambda: one_conn(st)] * CONNECTIONS + [lambda: stop(st)]))
+        par(*([lambda: one_conn(st)] * CONNECTIONS + [lambda: stop(st)]))
 
-    with sqez.Connection(DB_FILE) as conn:
-        with sqez.ReadTransaction(conn) as tx:
-            (val,), = tx.select("SELECT value FROM counter")
+        with sqez.Connection(db_file) as conn:
+            with sqez.ReadTransaction(conn) as tx:
+                (val,), = tx.select("SELECT value FROM counter")
 
     print(f"Underestimate: {st.underestimate}")
     print(f"Value: {val}")
@@ -81,7 +84,7 @@ def stop(st: SharedState) -> None:
 
 def one_conn(st: SharedState) -> None:
     try:
-        with sqez.Connection(DB_FILE) as conn:
+        with sqez.Connection(st.db_file) as conn:
             par(*([lambda: reader(st, conn)] * CONNECTIONS + [lambda: writer(st, conn)] * CONNECTIONS))
     except:
         st.stop()

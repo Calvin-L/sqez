@@ -4,7 +4,6 @@ __pycache__
 /dist
 
 # Test outputs
-*.sqlite
 .pytest_cache
 
 # TLA+
