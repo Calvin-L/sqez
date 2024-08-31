@@ -146,7 +146,7 @@ def test_rwr() -> None:
                     with sqez.WriteTransaction(c2) as w:
                         w.exec("UPDATE counter SET value=1")
 
-                    def close_tx1():
+                    def close_tx1() -> None:
                         try:
                             time.sleep(2)
                         finally:
