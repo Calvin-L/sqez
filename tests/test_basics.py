@@ -66,3 +66,56 @@ def test_concurrency2() -> None:
             with ReadTransaction(conn) as tx:
                 tx.select("SELECT * FROM sqlite_schema")
         par(job, job, job)
+
+def test_early_connection_close() -> None:
+    with Connection(":memory:") as conn:
+        conn.close()
+        message = None
+        try:
+            with ReadTransaction(conn) as tx:
+                pass
+        except Exception as e:
+            message = str(e)
+        assert message == "Illegal connection state 4" # TODO: better message
+
+def test_early_read_transaction_close() -> None:
+    with Connection(":memory:") as conn:
+        with ReadTransaction(conn) as tx:
+            tx.close()
+            message = None
+            try:
+                tx.select("SELECT * FROM sqlite_schema")
+            except Exception as e:
+                message = str(e)
+            assert message == "Transaction is not open"
+
+def test_early_write_transaction_close() -> None:
+    with Connection(":memory:") as conn:
+        with WriteTransaction(conn) as tx:
+            tx.exec("CREATE TABLE foo (val INT)")
+        with WriteTransaction(conn) as tx:
+            tx.close()
+            message = None
+            try:
+                tx.exec("INSERT INTO foo (val) VALUES (1)")
+            except Exception as e:
+                message = str(e)
+            assert message == "Transaction is not open"
+        with ReadTransaction(conn) as tx:
+            assert tx.select("SELECT val FROM foo") == []
+
+def test_early_write_transaction_commit() -> None:
+    with Connection(":memory:") as conn:
+        with WriteTransaction(conn) as tx:
+            tx.exec("CREATE TABLE foo (val INT)")
+        with WriteTransaction(conn) as tx:
+            tx.exec("INSERT INTO foo (val) VALUES (1)")
+            tx.commit()
+            message = None
+            try:
+                tx.exec("INSERT INTO foo (val) VALUES (2)")
+            except Exception as e:
+                message = str(e)
+            assert message == "Transaction is not open"
+        with ReadTransaction(conn) as tx:
+            assert tx.select("SELECT val FROM foo") == [(1,)]

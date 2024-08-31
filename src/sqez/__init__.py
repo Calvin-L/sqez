@@ -123,6 +123,9 @@ class _Resource(ABC):
     def close(self) -> None:
         raise NotImplementedError()
 
+    def __del__(self) -> None:
+        self.close()
+
     def __enter__(self) -> Self:
         return self
 
@@ -197,14 +200,15 @@ class Connection(_Resource):
         self._txn_lock.acquire(_WRITE_MODE)
 
         try:
-            # Prevent any future operations on this connection.
-            self._state = Connection.CLOSED
+            if self._state != Connection.CLOSED:
+                # Prevent any future operations on this connection.
+                self._state = Connection.CLOSED
 
-            # Close all resources.
-            try:
-                self._cursor.close()
-            finally:
-                self._conn.close()
+                # Close all resources.
+                try:
+                    self._cursor.close()
+                finally:
+                    self._conn.close()
         finally:
             self._txn_lock.release()
 
@@ -264,6 +268,8 @@ class Connection(_Resource):
                 assert self._conn.in_transaction
                 self._cursor.execute("ROLLBACK")
                 self._state = Connection.IDLE
+            case Connection.CLOSED:
+                pass
             case _:
                 raise Exception(f"Illegal connection state {self._state}")
 
