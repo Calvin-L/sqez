@@ -35,16 +35,6 @@ def test_exception() -> None:
             rows = tx.select("SELECT * FROM foo")
             assert rows == []
 
-def test_two_readonly() -> None:
-    print("---- test_two_readonly() ----")
-    with Connection(":memory:") as conn:
-        with ReadTransaction(conn) as tx1:
-            tx1.select("SELECT * FROM sqlite_schema")
-            with ReadTransaction(conn) as tx2:
-                tx2.select("SELECT * FROM sqlite_schema")
-                tx1.select("SELECT * FROM sqlite_schema")
-            tx1.select("SELECT * FROM sqlite_schema")
-
 def par(*jobs: Callable[[], None]) -> None:
     threads = [threading.Thread(target=j, daemon=True) for j in jobs]
     for t in threads:
@@ -70,15 +60,9 @@ def test_concurrency1() -> None:
 def test_concurrency2() -> None:
     print("---- test_concurrency2() ----")
     with Connection(":memory:") as conn:
-        cv = threading.Condition(threading.Lock())
         count = 0
         def job() -> None:
             nonlocal count
             with ReadTransaction(conn) as tx:
-                with cv:
-                    count += 1
-                    cv.notify_all()
-                    while count < 3:
-                        cv.wait()
                 tx.select("SELECT * FROM sqlite_schema")
         par(job, job, job)

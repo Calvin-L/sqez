@@ -22,9 +22,10 @@
 
 
 from abc import ABC, abstractmethod
+from collections import deque
 from pathlib import PurePath
 from types import TracebackType
-from typing import Any, Self, Optional, Union, Literal, TypeAlias
+from typing import Any, Self, Optional, Union, Literal, TypeAlias, Callable
 import logging
 import sqlite3
 import threading
@@ -39,47 +40,80 @@ _READ_OR_WRITE: TypeAlias = Literal[1, 2]
 _IDLE_OR_READ_OR_WRITE: TypeAlias = Literal[0, 1, 2]
 
 
-class _FairRWLock:
-    __slots__ = ("_cv", "_mode", "_count", "_queue")
+def _no_cleanup() -> None:
+    pass
 
-    _TRANSITION_TABLE: tuple[tuple[_IDLE_OR_READ_OR_WRITE, ...], ...] = (
-        (_READ_MODE, _WRITE_MODE), # from _IDLE_MODE
-        (_READ_MODE,),             # from _READ_MODE
-        (),                        # from _WRITE_MODE
-    )
+
+class _FairRWLock:
+    __slots__ = ("_cv", "_mode", "_active_clients", "_pending_readers", "_pending_writers")
 
     def __init__(self) -> None:
         self._cv = threading.Condition(threading.Lock())
         self._mode: _IDLE_OR_READ_OR_WRITE = 0
-        self._count = 0
-        self._queue: list[threading.Thread] = []
-
-    def _safe_to_enter(self, desired_mode: _READ_OR_WRITE) -> bool:
-        return desired_mode in _FairRWLock._TRANSITION_TABLE[self._mode]
+        self._active_clients: set[threading.Thread] = set()
+        self._pending_readers: set[threading.Thread] = set()
+        self._pending_writers: deque[threading.Thread] = deque([])
 
     def acquire(self, desired_mode: _READ_OR_WRITE) -> None:
         cv = self._cv
-        q = self._queue
+        active_clients = self._active_clients
+        pending_readers = self._pending_readers
+        pending_writers = self._pending_writers
         me = threading.current_thread()
         with cv:
-            q.append(me)
-            while not (q[0] is me and self._safe_to_enter(desired_mode)):
-                cv.wait()
-            q.pop(0)
-            self._mode = desired_mode
-            self._count += 1
-            if desired_mode == _READ_MODE:
-                cv.notify_all() # Some other reader might now be at the head of the line
+            if self._mode == _IDLE_MODE and not pending_readers and not pending_writers:
+                # fast path
+                self._mode = desired_mode
+            else:
+                # slow path: register interest
+                if desired_mode == _WRITE_MODE:
+                    pending_writers.append(me)
+                else:
+                    pending_readers.add(me)
 
-    def release(self) -> _IDLE_OR_READ_OR_WRITE:
+                # wait loop
+                while True:
+                    if self._mode == _IDLE_MODE:
+                        if desired_mode == _WRITE_MODE:
+                            if pending_writers[0] is me:
+                                pending_writers.popleft()
+                                self._mode = desired_mode
+                                break
+                        else:
+                            active_clients.update(pending_readers)
+                            pending_readers.clear()
+                            self._mode = desired_mode
+                            break
+                    elif me in active_clients:
+                        break
+                    cv.wait()
+
+    def release(self, cleanup: Callable[[], None] = _no_cleanup) -> None:
         cv = self._cv
+        active_clients = self._active_clients
+        pending_readers = self._pending_readers
+        pending_writers = self._pending_writers
+        me = threading.current_thread()
         with cv:
-            self._count -= 1
-            if self._count == 0:
-                self._mode = _IDLE_MODE
-                cv.notify_all()
-            result = self._mode
-        return result
+            active_clients.discard(me)
+            if not active_clients:
+                try:
+                    cleanup()
+                finally:
+                    if self._mode == _WRITE_MODE:
+                        if pending_readers:
+                            self._mode = _READ_MODE
+                            active_clients.update(pending_readers)
+                            pending_readers.clear()
+                        else:
+                            self._mode = _IDLE_MODE
+                    else:
+                        if pending_writers:
+                            self._mode = _WRITE_MODE
+                            active_clients.add(pending_writers.popleft())
+                        else:
+                            self._mode = _IDLE_MODE
+                    cv.notify_all()
 
 
 class _Resource(ABC):
@@ -265,7 +299,6 @@ class Transaction(_Resource):
             raise Exception(f"{sql!r} is not a SELECT statement")
         _logger.debug("Selecting %r", sql)
         start = time.time()
-        result: list[tuple[Any, ...]]
 
         with self._connection._exec_lock:
             assert self._connection._conn.in_transaction
@@ -301,10 +334,7 @@ class ReadTransaction(Transaction):
             self._state = Transaction.CLOSED
             _logger.debug("Closing ReadTransaction...")
             start = time.time()
-            # Subtlety ahead!  See note in WriteTransaction.__init__().
-            with self._connection._exec_lock:
-                if self._connection._txn_lock.release() == _IDLE_MODE:
-                    self._connection._rollback()
+            self._connection._txn_lock.release(self._connection._rollback)
             _logger.debug("Closed in %ims", (time.time() - start) * 1000)
 
 
@@ -322,19 +352,7 @@ class WriteTransaction(Transaction):
         # case WE are responsible for releasing the lock,
         # since this object has not been returned to the caller yet.
         try:
-            # Subtlety ahead!  Most things that a WriteTransaction does do not
-            # need to be guarded by _exec_lock, since by holding _txn_lock we
-            # are already blocking all other concurrent access.  The ONE
-            # exception is this initial statement, which may need to
-            # synchronize with rollback from the last ReadTransaction.  When
-            # a ReadTransaction closes, it FIRST releases _txn_lock and THEN
-            # decides whether to roll back, all while holding _exec_lock.
-            # (It has to be done in that order because the reader can't know
-            # whether to close the transaction until it has gotten a return
-            # value from releasing _txn_lock.)  So, we need to acquire
-            # _exec_lock to ensure we've waited for that process to complete.
-            with self._connection._exec_lock:
-                self._connection._begin_immediate()
+            self._connection._begin_immediate()
             _logger.debug("Opened WriteTransaction in %ims", (time.time() - start) * 1000)
         except:
             self._connection._txn_lock.release()

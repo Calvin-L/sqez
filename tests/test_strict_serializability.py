@@ -113,3 +113,56 @@ def writer(st: SharedState, conn: sqez.Connection) -> None:
     except:
         st.stop()
         _logger.exception("writer")
+
+def test_rwr() -> None:
+    """
+    Test this scenario:
+
+             Connection     Connection
+                  1              2
+             __________        ____
+            |          |      |    |
+              R1    R2          W1
+        --------------------------------
+        1.  begin
+        2.                     begin
+        3.                     write
+        4.                     commit
+        5.         begin
+        6.         read
+
+    R2 must observe the effect of W1.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        with sqez.Connection(PurePath(d) / "db.sqlite") as c1:
+            with sqez.WriteTransaction(c1) as tx:
+                tx.exec("CREATE TABLE counter (value INT)")
+                tx.exec("INSERT INTO counter (value) VALUES (0)")
+
+            with sqez.Connection(PurePath(d) / "db.sqlite") as c2:
+                with sqez.ReadTransaction(c1) as tx1:
+                    (val1,), = tx1.select("SELECT value FROM counter")
+
+                    with sqez.WriteTransaction(c2) as w:
+                        w.exec("UPDATE counter SET value=1")
+
+                    def close_tx1():
+                        try:
+                            time.sleep(2)
+                        finally:
+                            tx1.close()
+
+                    t = threading.Thread(target=close_tx1)
+                    t.start()
+
+                    # Previously there was a bug where tx2 would "piggyback" on
+                    # the already-open transaction tx1 on c2.  But, for strict
+                    # serializability, tx2 must open a new transaction so that
+                    # it sees w's effects.
+                    with sqez.ReadTransaction(c1) as tx2:
+                        (val2,), = tx2.select("SELECT value FROM counter")
+
+                    t.join()
+
+                assert val1 == 0
+                assert val2 == 1

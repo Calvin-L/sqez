@@ -1,102 +1,75 @@
 ---- MODULE FairRWLockProofs ----
 
-EXTENDS FairRWLock, FiniteSets, FiniteSetTheorems, TLAPS
+EXTENDS FairRWLock, TLAPS
 
-TypeOK_Ind ==
-    /\ TypeOK
-    /\ IsFiniteSet({c \in Clients: pc[c] = "cs"})
-    /\ lock_count = Cardinality({c \in Clients: pc[c] = "cs"})
+THEOREM TypeCorrect == Spec => []TypeOK
+    <1>a. Init => TypeOK BY DEF Init, TypeOK
+    <1>b. (TypeOK /\ [Next]_vars) => TypeOK'
+        <2>a. CASE \E c \in Clients: FastAcquire(c) BY <2>a DEF FastAcquire, TypeOK, DesiredMode
+        <2>b. CASE \E c \in Clients: SlowAcquire(c) BY <2>b DEF SlowAcquire, TypeOK, Clients
+        <2>c. CASE \E c \in Clients: EnterCS(c) BY <2>c DEF EnterCS, TypeOK, DesiredMode, Clients
+        <2>d. CASE \E c \in Clients: Release(c) BY <2>d DEF Release, TypeOK, NotifyAll, Clients
+        <2>e. CASE UNCHANGED vars BY <2>e DEF vars, TypeOK
+        <2> QED BY <2>a, <2>b, <2>c, <2>d, <2>e DEF Next
+    <1> QED BY PTL, <1>a, <1>b DEF Spec
 
-THEOREM TypeCorrect == Spec => []TypeOK_Ind
-    <1>a. Init => TypeOK_Ind BY FS_EmptySet DEF Init, TypeOK_Ind, TypeOK
-    <1>b. (TypeOK_Ind /\ [Next]_vars) => TypeOK_Ind'
-        <2>a. (TypeOK_Ind /\ \E c \in Clients: BeginAcquire(c)) => TypeOK_Ind'
-            <3>a. (\E c \in Clients: BeginAcquire(c)) => ({c \in Clients: pc[c] = "cs"}' = {c \in Clients: pc[c] = "cs"})
-                <4> SUFFICES ASSUME NEW c \in Clients, BeginAcquire(c) PROVE {c \in Clients: pc[c] = "cs"}' = {c \in Clients: pc[c] = "cs"} OBVIOUS
-                <4> QED BY DEF BeginAcquire
-            <3> QED BY <3>a DEF BeginAcquire, TypeOK_Ind, TypeOK
-        <2>b. (TypeOK_Ind /\ \E c \in Clients: EnterCS(c)) => TypeOK_Ind'
-            <3> SUFFICES ASSUME TypeOK_Ind, NEW c \in Clients, EnterCS(c) PROVE TypeOK_Ind' OBVIOUS
-            <3>a. CASE lock_queue[1] = c /\ SafeToEnter(IF c \in Writers THEN "write" ELSE "read")
-                <4>a. c \notin {c \in Clients: pc[c] = "cs"} BY DEF EnterCS
-                <4>b. {c \in Clients: pc[c] = "cs"}' = {c \in Clients: pc[c] = "cs"} \union {c} BY <3>a DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
-                <4>c. IsFiniteSet({c \in Clients: pc[c] = "cs"})' /\ Cardinality({c \in Clients: pc[c] = "cs"}') = Cardinality({c \in Clients: pc[c] = "cs"}) + 1
-                      BY <4>a, <4>b, FS_AddElement DEF TypeOK_Ind
-                <4> pc' \in [Clients -> {"idle", "wait", "sleep", "cs"}] BY <4>c DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
-                <4> lock_count' \in Nat BY <4>c DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
-                <4> lock_count' = lock_count + 1 BY <4>c DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
-                <4> QED BY <4>c DEF EnterCS, NotifyAll, TypeOK_Ind, TypeOK
-            <3>b. CASE ~(lock_queue[1] = c /\ SafeToEnter(IF c \in Writers THEN "write" ELSE "read")) BY <3>b DEF EnterCS, TypeOK_Ind, TypeOK
-            <3> QED BY <3>a, <3>b
-        <2>c. (TypeOK_Ind /\ \E c \in Clients: Release(c)) => TypeOK_Ind'
-            <3> SUFFICES ASSUME TypeOK_Ind, NEW c \in Clients, Release(c) PROVE TypeOK_Ind' OBVIOUS
-            <3>x. {c \in Clients: pc[c] = "cs"}' = ({c \in Clients: pc[c] = "cs"} \ {c}) BY DEF Release, NotifyAll, TypeOK_Ind, TypeOK
-            <3>y. c \in {c \in Clients: pc[c] = "cs"} BY DEF Release
-            <3>a. Cardinality({c \in Clients: pc[c] = "cs"})' = Cardinality({c \in Clients: pc[c] = "cs"}) - 1
-                  BY <3>x, <3>y, FS_RemoveElement DEF TypeOK_Ind
-            <3>c. IsFiniteSet({c \in Clients: pc[c] = "cs"})'
-                  BY <3>x, <3>y, FS_RemoveElement DEF TypeOK_Ind
-            <3>b. lock_count' = Cardinality({c \in Clients: pc[c] = "cs"})'
-                  BY <3>x, <3>y, <3>a DEF Release, TypeOK_Ind
-            <3>f. lock_count' \in Nat BY <3>b, <3>c, FS_CardinalityType
-            <3> QED BY <3>a, <3>c, <3>f DEF Release, NotifyAll, TypeOK_Ind, TypeOK
-        <2>d. (TypeOK_Ind /\ UNCHANGED vars) => TypeOK_Ind' BY DEF vars, TypeOK_Ind, TypeOK
-        <2> QED BY <2>a, <2>b, <2>c, <2>d DEF Next
+LEMMA WaitingReadersCorrect == Spec => []WaitingReadersArePendingOrActive
+    <1> SUFFICES ASSUME []TypeOK PROVE Spec => []WaitingReadersArePendingOrActive BY TypeCorrect
+    <1>a. Init => WaitingReadersArePendingOrActive BY DEF Init, WaitingReadersArePendingOrActive, Clients
+    <1>b. (WaitingReadersArePendingOrActive /\ [Next]_vars) => WaitingReadersArePendingOrActive'
+        <2> pc \in [Clients -> {"idle", "wait", "sleep", "cs"}] BY PTL DEF TypeOK
+        <2>a. CASE \E c \in Clients: FastAcquire(c) BY <2>a DEF FastAcquire, WaitingReadersArePendingOrActive, DesiredMode, Clients
+        <2>b. CASE \E c \in Clients: SlowAcquire(c) BY <2>b DEF SlowAcquire, WaitingReadersArePendingOrActive, Clients
+        <2>c. CASE \E c \in Clients: EnterCS(c) BY <2>c DEF EnterCS, WaitingReadersArePendingOrActive, DesiredMode, Clients
+        <2>d. CASE \E c \in Clients: Release(c) BY <2>d DEF Release, WaitingReadersArePendingOrActive, NotifyAll, Clients
+        <2>e. CASE UNCHANGED vars BY <2>e DEF vars, WaitingReadersArePendingOrActive
+        <2> QED BY <2>a, <2>b, <2>c, <2>d, <2>e DEF Next
     <1> QED BY PTL, <1>a, <1>b DEF Spec
 
 LEMMA LockModeCorrect_implies_MutualExclusion == ASSUME LockModeCorrect, TypeOK PROVE MutualExclusion
     <1> SUFFICES ASSUME LockModeCorrect, TypeOK, NEW c \in Clients, pc[c] = "cs", NEW w \in (Writers \ {c}) PROVE pc[w] /= "cs" BY DEF MutualExclusion
-    <1>a. CASE lock_mode = "idle" BY <1>a DEF LockModeCorrect
-    <1>b. CASE lock_mode = "read" BY <1>b, ReadersAndWritersDisjoint DEF LockModeCorrect, Clients
-    <1>c. CASE lock_mode = "write" BY <1>c DEF LockModeCorrect, Clients
+    <1>a. CASE lock_mode = "idle" BY <1>a DEF LockModeCorrect, TrueActiveClients
+    <1>b. CASE lock_mode = "read" BY <1>b, ReadersAndWritersDisjoint DEF LockModeCorrect, TrueActiveClients, Clients
+    <1>c. CASE lock_mode = "write" BY <1>c DEF LockModeCorrect, TrueActiveClients, Clients
     <1> QED BY <1>a, <1>b, <1>c DEF TypeOK
 
 THEOREM Safe == Spec => []MutualExclusion
-    <1> SUFFICES ASSUME []TypeOK_Ind PROVE Spec => []MutualExclusion BY TypeCorrect
-    <1> SUFFICES Spec => []LockModeCorrect BY PTL, LockModeCorrect_implies_MutualExclusion DEF TypeOK_Ind
-    <1>a. Init => LockModeCorrect BY DEF Init, LockModeCorrect
-    <1>b. (LockModeCorrect /\ [Next]_vars) => LockModeCorrect'
-        <2>x. TypeOK_Ind BY PTL
-        <2>a. CASE \E c \in Clients: BeginAcquire(c) BY <2>x, <2>a DEF BeginAcquire, LockModeCorrect, TypeOK_Ind, TypeOK
-        <2>b. CASE \E c \in Clients: EnterCS(c) \* BY <2>x, <2>b DEF EnterCS, LockModeCorrect, TypeOK_Ind, TypeOK
-            <3> SUFFICES ASSUME LockModeCorrect, NEW c \in Clients, EnterCS(c) PROVE LockModeCorrect' BY <2>b
-            <3>a. CASE c \in Writers
+    <1> SUFFICES ASSUME []TypeOK, []WaitingReadersArePendingOrActive PROVE Spec => []MutualExclusion BY TypeCorrect, WaitingReadersCorrect
+    <1> SUFFICES Spec => [](LockModeCorrect /\ ActiveClientsCorrect) BY PTL, LockModeCorrect_implies_MutualExclusion
+    <1>a. Init => (LockModeCorrect /\ ActiveClientsCorrect) BY DEF Init, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect
+    <1>b. (LockModeCorrect /\ ActiveClientsCorrect /\ [Next]_vars) => (LockModeCorrect /\ ActiveClientsCorrect)'
+        <2> /\ pc \in [Clients -> {"idle", "wait", "sleep", "cs"}]
+            /\ lock_mode \in {"idle", "read", "write"}
+            /\ active_clients \subseteq Clients
+            /\ pending_readers \subseteq Readers
+            /\ pending_writers \in Seq(Writers)
+            BY PTL DEF TypeOK
+        <2>a. CASE \E c \in Clients: FastAcquire(c) BY <2>a DEF FastAcquire, DesiredMode, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect, Clients
+        <2>b. CASE \E c \in Clients: SlowAcquire(c) BY <2>b DEF SlowAcquire, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect, Clients
+        <2>c. CASE \E c \in Clients: EnterCS(c)
+            <3> SUFFICES ASSUME NEW c \in Clients, EnterCS(c), LockModeCorrect, ActiveClientsCorrect PROVE LockModeCorrect' /\ ActiveClientsCorrect' BY <2>c
+            <3> WaitingReadersArePendingOrActive BY PTL
+            <3> LockModeCorrect' BY DEF EnterCS, DesiredMode, LockModeCorrect, TrueActiveClients, Clients
+            <3> ActiveClientsCorrect'
                 <4>a. CASE lock_mode = "idle"
-                    <5>a. CASE lock_queue[1] = c \*BY <4>a, <5>a, <3>a, <2>x DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                        <6>a. lock_mode' = "write" BY <4>a, <5>a, <3>a, <2>x DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                        <6> SUFFICES \E w \in Writers: {c \in Clients: pc'[c] = "cs"} = {w} BY <6>a DEF LockModeCorrect
-                        <6> WITNESS c \in Writers
-                        <6> QED BY <6>a, <4>a, <5>a, <3>a, <2>x DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                    <5>b. CASE lock_queue[1] /= c BY <4>a, <5>b, <3>a, <2>x DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                    <5> QED BY <5>a, <5>b
-                <4>b. CASE lock_mode = "read" BY <4>b, <3>a, <2>x DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                <4>c. CASE lock_mode = "write"
-                    <5> SUFFICES UNCHANGED {c \in Clients: pc[c] = "cs"} BY <4>c, <3>a, <2>x DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                    <5>a. pc[c] /= "cs" BY <4>c, <3>a, <2>x DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                    <5>b. pc'[c] = "sleep" BY <4>c, <3>a, <2>x DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                    <5> QED BY <4>c, <3>a, <2>x, <5>a, <5>b DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                <4> QED BY <2>x, <4>a, <4>b, <4>c DEF TypeOK_Ind, TypeOK
-            <3>b. CASE c \notin Writers
-                <4> c \in Readers BY <3>b DEF Clients
-                <4>a. CASE lock_mode = "idle" BY <2>x, <3>b, <4>a DEF EnterCS, NotifyAll, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                <4>b. CASE lock_mode = "read" BY <2>x, <3>b, <4>b DEF EnterCS, NotifyAll, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                <4>c. CASE lock_mode = "write"
-                    <5>a. UNCHANGED lock_mode BY <2>x, <3>b, <4>c DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                    <5> QED BY <2>x, <3>b, <4>c, <5>a DEF EnterCS, SafeToEnter, LockModeCorrect, TypeOK_Ind, TypeOK
-                <4> QED BY <2>x, <4>a, <4>b, <4>c DEF TypeOK_Ind, TypeOK
-            <3> QED BY <3>a, <3>b DEF Clients
-        <2>c. CASE \E c \in Clients: Release(c)
-            <3> SUFFICES ASSUME LockModeCorrect, NEW c \in Clients, Release(c) PROVE LockModeCorrect' BY <2>c
-            <3>b. CASE lock_mode = "idle" BY <3>b DEF Release, LockModeCorrect
-            <3>c. CASE lock_mode = "read"
-                <4>a. CASE lock_count = 1 BY <2>x, <4>a, FS_Singleton DEF Release, NotifyAll, LockModeCorrect, TypeOK_Ind, TypeOK
-                <4>b. CASE lock_count > 1 BY <2>x, <3>c, <4>b DEF Release, NotifyAll, LockModeCorrect, TypeOK_Ind, TypeOK
-                <4>c. CASE lock_count < 1 BY <2>x, <4>c, FS_EmptySet DEF Release, TypeOK_Ind, TypeOK
-                <4> QED BY <2>x, <4>a, <4>b, <4>c DEF TypeOK_Ind, TypeOK
-            <3>d. CASE lock_mode = "write" BY <3>d, <2>x, FS_Singleton DEF Release, NotifyAll, LockModeCorrect, TypeOK_Ind, TypeOK
-            <3> QED BY <2>x, <3>b, <3>c, <3>d DEF TypeOK_Ind, TypeOK
-        <2>d. CASE UNCHANGED vars BY <2>d DEF vars, LockModeCorrect
-        <2> QED BY <2>a, <2>b, <2>c, <2>d DEF Next
+                    <5>a. CASE DesiredMode(c) = "write" BY <4>a, <5>a DEF EnterCS, DesiredMode, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect, Clients
+                    <5>b. CASE DesiredMode(c) /= "write"
+                        <6> USE DEF WaitingReadersArePendingOrActive
+                        <6>a. CASE active_clients = {} /\ (\E cc \in Clients: {c \in Clients: pc[c] = "cs"} = {cc}) BY <4>a, <5>b DEF EnterCS, DesiredMode, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect, Clients
+                        <6>b. CASE {c \in Clients: pc[c] = "cs"} \subseteq active_clients BY <4>a, <5>b DEF EnterCS, DesiredMode, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect, Clients
+                        <6> QED BY <6>a, <6>b DEF ActiveClientsCorrect
+                    <5> QED BY <5>a, <5>b DEF DesiredMode
+                <4>b. CASE lock_mode /= "idle" BY <4>b DEF EnterCS, DesiredMode, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect, Clients
+                <4> QED BY <4>a, <4>b
+            <3> QED OBVIOUS
+        <2>d. CASE \E c \in Clients: Release(c)
+            <3> SUFFICES ASSUME NEW c \in Clients, Release(c), LockModeCorrect, ActiveClientsCorrect PROVE LockModeCorrect' /\ ActiveClientsCorrect' BY <2>d
+            <3> DEFINE new_active_clients == active_clients \ {c}
+            <3>a. CASE new_active_clients = {}  BY <3>a DEF Release, NotifyAll, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect, Clients
+            <3>b. CASE new_active_clients /= {} BY <3>b DEF Release, NotifyAll, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect, Clients
+            <3> QED BY <3>a, <3>b
+        <2>e. CASE UNCHANGED vars BY <2>e DEF vars, LockModeCorrect, TrueActiveClients, ActiveClientsCorrect
+        <2> QED BY <2>a, <2>b, <2>c, <2>d, <2>e DEF Next
     <1> QED BY PTL, <1>a, <1>b DEF Spec
 
 ====
