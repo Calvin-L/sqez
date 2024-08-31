@@ -117,6 +117,7 @@ class _FairRWLock:
 
 
 class _Resource(ABC):
+    __slots__ = ()
 
     @abstractmethod
     def close(self) -> None:
