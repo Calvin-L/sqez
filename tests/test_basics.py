@@ -119,3 +119,37 @@ def test_early_write_transaction_commit() -> None:
             assert message == "Transaction is not open"
         with ReadTransaction(conn) as tx:
             assert tx.select("SELECT val FROM foo") == [(1,)]
+
+def test_exotic_selects() -> None:
+    with Connection(":memory:") as conn:
+        with ReadTransaction(conn) as tx:
+            assert tx.select("SELECT count(*) FROM sqlite_schema") == [(0,)]
+            assert tx.select("""
+                WITH tmp (cnt) AS (SELECT count(*) FROM sqlite_schema)
+                SELECT * FROM tmp
+                """) == [(0,)]
+            assert tx.select("VALUES (1, 2, 3)") == [(1,2,3)]
+
+            message = None
+            try:
+                tx.select("CREATE TABLE foo (x INT)")
+            except Exception as e:
+                message = str(e)
+            assert message == "'CREATE TABLE foo (x INT)' is not a SELECT statement"
+
+def test_sneaky_insert() -> None:
+    # I don't know of a reliable way to TRULY enforce that tx.select() only
+    # accepts read operations.  To allow compound WITH-SELECT statements we
+    # also have to admit compound WITH-INSERT statements.  :(  But we can at
+    # least ensure that the effects of such an operation are invisible to other
+    # transactions.
+    with Connection(":memory:") as conn:
+        with WriteTransaction(conn) as tx:
+            tx.exec("CREATE TABLE foo (x INT)")
+        with ReadTransaction(conn) as tx:
+            tx.select("""
+                WITH tmp (cnt) AS (SELECT count(*) FROM sqlite_schema)
+                INSERT INTO foo (x) SELECT cnt FROM tmp
+                """) == [(0,)]
+        with ReadTransaction(conn) as tx:
+            assert tx.select("SELECT * FROM foo") == []

@@ -30,6 +30,7 @@ import logging
 import sqlite3
 import threading
 import time
+import re
 
 
 _logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ _READ_MODE: Literal[1] = 1
 _WRITE_MODE: Literal[2] = 2
 _READ_OR_WRITE: TypeAlias = Literal[1, 2]
 _IDLE_OR_READ_OR_WRITE: TypeAlias = Literal[0, 1, 2]
+_SELECT_START_REGEX = re.compile(r"^\s*(?:SELECT|WITH|VALUES)\b", re.IGNORECASE)
 
 
 def _no_cleanup() -> None:
@@ -302,7 +304,7 @@ class Transaction(_Resource):
     def select(self, sql: str, argv: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
         if self._state not in Transaction.OPEN:
             raise Exception("Transaction is not open")
-        if sql[:6].upper() != "SELECT":
+        if not _SELECT_START_REGEX.match(sql):
             raise Exception(f"{sql!r} is not a SELECT statement")
         _logger.debug("Selecting %r", sql)
         start = time.time()
