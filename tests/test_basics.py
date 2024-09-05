@@ -76,7 +76,7 @@ def test_early_connection_close() -> None:
                 pass
         except Exception as e:
             message = str(e)
-        assert message == "Illegal connection state 4" # TODO: better message
+        assert message == "Illegal connection state _ConnectionState.CLOSED" # TODO: better message
 
 def test_early_read_transaction_close() -> None:
     with Connection(":memory:") as conn:

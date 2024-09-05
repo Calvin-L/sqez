@@ -45,6 +45,7 @@ a ReadTransaction or WriteTransaction:
 
 from abc import ABC, abstractmethod
 from collections import deque
+from enum import Enum
 from pathlib import PurePath
 from types import TracebackType
 from typing import Any, Self, Optional, Union, Literal, TypeAlias, Callable
@@ -64,11 +65,6 @@ __all__ = [
 
 
 _logger = logging.getLogger(__name__)
-_IDLE_MODE: Literal[0] = 0
-_READ_MODE: Literal[1] = 1
-_WRITE_MODE: Literal[2] = 2
-_READ_OR_WRITE: TypeAlias = Literal[1, 2]
-_IDLE_OR_READ_OR_WRITE: TypeAlias = Literal[0, 1, 2]
 _SELECT_START_REGEX = re.compile(r"^\s*(?:SELECT|WITH|VALUES)\b", re.IGNORECASE)
 
 
@@ -76,12 +72,21 @@ def _no_cleanup() -> None:
     pass
 
 
+class _LockMode(Enum):
+    IDLE  = 0
+    READ  = 1
+    WRITE = 2
+
+
+_READ_OR_WRITE: TypeAlias = Literal[_LockMode.READ, _LockMode.WRITE]
+
+
 class _FairRWLock:
     __slots__ = ("_cv", "_mode", "_active_clients", "_pending_readers", "_pending_writers")
 
     def __init__(self) -> None:
         self._cv = threading.Condition(threading.Lock())
-        self._mode: _IDLE_OR_READ_OR_WRITE = 0
+        self._mode: _LockMode = _LockMode.IDLE
         self._active_clients: set[threading.Thread] = set()
         self._pending_readers: set[threading.Thread] = set()
         self._pending_writers: deque[threading.Thread] = deque([])
@@ -93,20 +98,20 @@ class _FairRWLock:
         pending_writers = self._pending_writers
         me = threading.current_thread()
         with cv:
-            if self._mode == _IDLE_MODE and not pending_readers and not pending_writers:
+            if self._mode == _LockMode.IDLE and not pending_readers and not pending_writers:
                 # fast path
                 self._mode = desired_mode
             else:
                 # slow path: register interest
-                if desired_mode == _WRITE_MODE:
+                if desired_mode == _LockMode.WRITE:
                     pending_writers.append(me)
                 else:
                     pending_readers.add(me)
 
                 # wait loop
                 while True:
-                    if self._mode == _IDLE_MODE:
-                        if desired_mode == _WRITE_MODE:
+                    if self._mode == _LockMode.IDLE:
+                        if desired_mode == _LockMode.WRITE:
                             if pending_writers[0] is me:
                                 pending_writers.popleft()
                                 self._mode = desired_mode
@@ -132,19 +137,19 @@ class _FairRWLock:
                 try:
                     cleanup()
                 finally:
-                    if self._mode == _WRITE_MODE:
+                    if self._mode == _LockMode.WRITE:
                         if pending_readers:
-                            self._mode = _READ_MODE
+                            self._mode = _LockMode.READ
                             active_clients.update(pending_readers)
                             pending_readers.clear()
                         else:
-                            self._mode = _IDLE_MODE
+                            self._mode = _LockMode.IDLE
                     else:
                         if pending_writers:
-                            self._mode = _WRITE_MODE
+                            self._mode = _LockMode.WRITE
                             active_clients.add(pending_writers.popleft())
                         else:
-                            self._mode = _IDLE_MODE
+                            self._mode = _LockMode.IDLE
                     cv.notify_all()
 
 
@@ -174,6 +179,14 @@ class _Resource(ABC):
         self.close()
 
 
+class _ConnectionState(Enum):
+    IDLE         = 0
+    READ_LOCKED  = 1
+    WRITE_LOCKED = 2
+    CORRUPT      = 3
+    CLOSED       = 4
+
+
 class Connection(_Resource):
     """
     A connection to a SQLite database.  Connection objects can be used as
@@ -183,12 +196,6 @@ class Connection(_Resource):
     """
 
     __slots__ = ("_txn_lock", "_exec_lock", "_state", "_conn", "_cursor")
-
-    IDLE         = 0
-    READ_LOCKED  = 1
-    WRITE_LOCKED = 2
-    CORRUPT      = 3
-    CLOSED       = 4
 
     def __init__(self, filename: Union[str, PurePath]):
         """
@@ -205,7 +212,7 @@ class Connection(_Resource):
         assert sqlite3.threadsafety > 0, "sqlite3 module is not safe to share between threads"
         self._txn_lock = _FairRWLock()
         self._exec_lock = threading.Lock()
-        self._state = Connection.IDLE
+        self._state: _ConnectionState = _ConnectionState.IDLE
 
         # 2024/8/15: Initially I had tried to make this work with the shiny new
         # "autocommit" setting, if available (see commented-out code below).
@@ -257,12 +264,12 @@ class Connection(_Resource):
         """
 
         # Wait for all in-progress transactions to close.
-        self._txn_lock.acquire(_WRITE_MODE)
+        self._txn_lock.acquire(_LockMode.WRITE)
 
         try:
-            if self._state != Connection.CLOSED:
+            if self._state != _ConnectionState.CLOSED:
                 # Prevent any future operations on this connection.
-                self._state = Connection.CLOSED
+                self._state = _ConnectionState.CLOSED
 
                 # Close all resources.
                 try:
@@ -274,8 +281,8 @@ class Connection(_Resource):
 
     def _begin_deferred_if_not_in_txn(self) -> None:
         match self._state:
-            case Connection.IDLE:
-                self._state = Connection.CORRUPT # in case begin fails
+            case _ConnectionState.IDLE:
+                self._state = _ConnectionState.CORRUPT # in case begin fails
                 assert not self._conn.in_transaction
                 self._cursor.execute("BEGIN DEFERRED")
                 # Force SQLite to upgrade our transaction to a shared read transaction
@@ -293,25 +300,25 @@ class Connection(_Resource):
                 #
                 # See: https://sqlite.org/forum/forumpost/d025322e746a5930
                 self._cursor.execute("SELECT * FROM sqlite_schema LIMIT 1")
-                self._state = Connection.READ_LOCKED
-            case Connection.READ_LOCKED:
+                self._state = _ConnectionState.READ_LOCKED
+            case _ConnectionState.READ_LOCKED:
                 pass
             case _:
                 raise Exception(f"Illegal connection state {self._state}")
 
     def _begin_immediate(self) -> None:
         match self._state:
-            case Connection.IDLE:
-                self._state = Connection.CORRUPT # in case begin fails
+            case _ConnectionState.IDLE:
+                self._state = _ConnectionState.CORRUPT # in case begin fails
                 assert not self._conn.in_transaction
                 self._cursor.execute("BEGIN IMMEDIATE")
-                self._state = Connection.WRITE_LOCKED
+                self._state = _ConnectionState.WRITE_LOCKED
             case _:
                 raise Exception(f"Illegal connection state {self._state}")
 
     def _exec(self, sql: str, argv: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
         match self._state:
-            case Connection.READ_LOCKED | Connection.WRITE_LOCKED:
+            case _ConnectionState.READ_LOCKED | _ConnectionState.WRITE_LOCKED:
                 assert self._conn.in_transaction
                 return list(self._cursor.execute(sql, argv))
             case _:
@@ -323,25 +330,32 @@ class Connection(_Resource):
 
     def _rollback(self) -> None:
         match self._state:
-            case Connection.READ_LOCKED | Connection.WRITE_LOCKED:
-                self._state = Connection.CORRUPT # in case rollback fails
+            case _ConnectionState.READ_LOCKED | _ConnectionState.WRITE_LOCKED:
+                self._state = _ConnectionState.CORRUPT # in case rollback fails
                 assert self._conn.in_transaction
                 self._cursor.execute("ROLLBACK")
-                self._state = Connection.IDLE
-            case Connection.CLOSED:
+                self._state = _ConnectionState.IDLE
+            case _ConnectionState.CLOSED:
                 pass
             case _:
                 raise Exception(f"Illegal connection state {self._state}")
 
     def _commit(self) -> None:
         match self._state:
-            case Connection.WRITE_LOCKED:
-                self._state = Connection.CORRUPT # in case commit fails
+            case _ConnectionState.WRITE_LOCKED:
+                self._state = _ConnectionState.CORRUPT # in case commit fails
                 assert self._conn.in_transaction
                 self._cursor.execute("COMMIT")
-                self._state = Connection.IDLE
+                self._state = _ConnectionState.IDLE
             case _:
                 raise Exception(f"Illegal connection state {self._state}")
+
+
+class _TransactionState(Enum):
+    OPEN             = 1
+    COMMIT_AMBIGUOUS = 2
+    COMMITTED        = 3
+    CLOSED           = 4
 
 
 class Transaction(_Resource):
@@ -352,27 +366,19 @@ class Transaction(_Resource):
     Transactions are not thread-safe.
     """
 
-    OPEN_RO          : Literal[1] = 1
-    OPEN_RW          : Literal[2] = 2
-    COMMIT_AMBIGUOUS : Literal[3] = 3
-    COMMITTED        : Literal[4] = 4
-    CLOSED           : Literal[5] = 5
-    OPEN             = {OPEN_RO, OPEN_RW}
-
     __slots__ = ("_state", "_connection")
 
-    def __init__(self, connection: Connection, initial_state: Literal[1, 2]) -> None:
+    def __init__(self, connection: Connection) -> None:
         """
         Create a transaction.
 
         Parameters:
 
          - connection    -- the underlying connection
-         - initial_state -- the initial state of the transaction
         """
 
         super().__init__()
-        self._state: Literal[1, 2, 3, 4, 5] = initial_state
+        self._state = _TransactionState.OPEN
         self._connection = connection
 
     def select(self, sql: str, argv: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
@@ -387,7 +393,7 @@ class Transaction(_Resource):
         Returns the read rows as a list of tuples.
         """
 
-        if self._state not in Transaction.OPEN:
+        if self._state != _TransactionState.OPEN:
             raise Exception("Transaction is not open")
         if not _SELECT_START_REGEX.match(sql):
             raise Exception(f"{sql!r} is not a SELECT statement")
@@ -423,9 +429,9 @@ class ReadTransaction(Transaction):
 
         _logger.debug("Opening ReadTransaction...")
         start = time.time()
-        super().__init__(connection, Transaction.OPEN_RO)
+        super().__init__(connection)
 
-        self._connection._txn_lock.acquire(_READ_MODE)
+        self._connection._txn_lock.acquire(_LockMode.READ)
 
         # Subsequent initialization might throw exceptions.  In that
         # case WE are responsible for releasing the lock,
@@ -439,8 +445,8 @@ class ReadTransaction(Transaction):
             raise
 
     def close(self) -> None:
-        if self._state != Transaction.CLOSED:
-            self._state = Transaction.CLOSED
+        if self._state != _TransactionState.CLOSED:
+            self._state = _TransactionState.CLOSED
             _logger.debug("Closing ReadTransaction...")
             start = time.time()
             self._connection._txn_lock.release(self._connection._rollback)
@@ -468,9 +474,9 @@ class WriteTransaction(Transaction):
 
         _logger.debug("Opening WriteTransaction...")
         start = time.time()
-        super().__init__(connection, Transaction.OPEN_RW)
+        super().__init__(connection)
 
-        self._connection._txn_lock.acquire(_WRITE_MODE)
+        self._connection._txn_lock.acquire(_LockMode.WRITE)
 
         # Subsequent initialization might throw exceptions.  In that
         # case WE are responsible for releasing the lock,
@@ -495,7 +501,7 @@ class WriteTransaction(Transaction):
         INSERT, UPDATE, or DELETE then the number is arbitrary.
         """
 
-        if self._state not in Transaction.OPEN:
+        if self._state != _TransactionState.OPEN:
             raise Exception("Transaction is not open")
         _logger.debug("Executing %r...", sql)
         start = time.time()
@@ -519,18 +525,18 @@ class WriteTransaction(Transaction):
         this method also closes the transaction, making it unusable.
         """
 
-        if self._state not in Transaction.OPEN:
+        if self._state != _TransactionState.OPEN:
             raise Exception("Transaction is not open")
         _logger.debug("Committing...")
         start = time.time()
-        self._state = Transaction.COMMIT_AMBIGUOUS
+        self._state = _TransactionState.COMMIT_AMBIGUOUS
         self._connection._commit() # don't need _exc_lock; holding exclusive _txn_lock
-        self._state = Transaction.COMMITTED
+        self._state = _TransactionState.COMMITTED
         _logger.debug("Committed in %ims", (time.time() - start) * 1000)
 
     def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Optional[TracebackType]) -> None:
         try:
-            if exc_type is None and self._state == Transaction.OPEN_RW:
+            if exc_type is None and self._state == _TransactionState.OPEN:
                 self.commit()
         finally:
             super().__exit__(exc_type, exc_val, exc_tb)
@@ -542,12 +548,12 @@ class WriteTransaction(Transaction):
         """
 
         try:
-            if self._state in (Transaction.OPEN_RW, Transaction.COMMIT_AMBIGUOUS):
+            if self._state in (_TransactionState.OPEN, _TransactionState.COMMIT_AMBIGUOUS):
                 _logger.debug("Rolling back WriteTransaction...")
                 start = time.time()
                 self._connection._rollback() # don't need _exc_lock; holding exclusive _txn_lock
                 _logger.debug("Rolled back in %ims", (time.time() - start) * 1000)
         finally:
-            if self._state != Transaction.CLOSED:
-                self._state = Transaction.CLOSED
+            if self._state != _TransactionState.CLOSED:
+                self._state = _TransactionState.CLOSED
                 self._connection._txn_lock.release()
