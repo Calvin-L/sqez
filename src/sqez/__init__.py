@@ -21,6 +21,28 @@
 # SOFTWARE.
 
 
+"""
+SQEZ is a thin thread-safe wrapper around sqlite3.
+
+To use the module, create a Connection and then use that to create
+a ReadTransaction or WriteTransaction:
+
+    import sqez
+
+    with sqez.Connection("path/to/db") as conn:
+
+        with sqez.WriteTransaction(conn) as tx:
+            tx.exec("CREATE TABLE foo (value INT)")
+            inserted = tx.exec("INSERT INTO foo (value) VALUES (?)", (5,))
+            assert inserted == 1
+            assert tx.select("SELECT * FROM foo WHERE value=?", (1,)) == []
+
+        with sqez.ReadTransaction(conn) as tx:
+            rows = tx.select("SELECT * FROM foo")
+            assert rows == [(5,)]
+"""
+
+
 from abc import ABC, abstractmethod
 from collections import deque
 from pathlib import PurePath
@@ -119,10 +141,19 @@ class _FairRWLock:
 
 
 class _Resource(ABC):
+    """
+    A resource has an idempotent close() method.  It can be used as a context
+    manager, in which case it closes when the block exits.  Also, __del__
+    calls close() just in case.
+    """
+
     __slots__ = ()
 
     @abstractmethod
     def close(self) -> None:
+        """
+        Close the resource.
+        """
         raise NotImplementedError()
 
     def __del__(self) -> None:
@@ -136,6 +167,13 @@ class _Resource(ABC):
 
 
 class Connection(_Resource):
+    """
+    A connection to a SQLite database.  Connection objects can be used as
+    context managers; the connection will be closed at the end of the context.
+
+    Multiple threads can safely share one Connection.
+    """
+
     __slots__ = ("_txn_lock", "_exec_lock", "_state", "_conn", "_cursor")
 
     IDLE         = 0
@@ -145,6 +183,14 @@ class Connection(_Resource):
     CLOSED       = 4
 
     def __init__(self, filename: Union[str, PurePath]):
+        """
+        Create a connection.
+
+        Parameters:
+
+         - filename -- the file to open
+        """
+
         super().__init__()
         _logger.debug("Opening connection to sqlite db %s...", filename)
         start = time.time()
@@ -198,6 +244,10 @@ class Connection(_Resource):
             raise
 
     def close(self) -> None:
+        """
+        Close the connection.  Any open transactions will become unusable.
+        """
+
         # Wait for all in-progress transactions to close.
         self._txn_lock.acquire(_WRITE_MODE)
 
@@ -287,6 +337,13 @@ class Connection(_Resource):
 
 
 class Transaction(_Resource):
+    """
+    A Transaction is either a ReadTransaction or a WriteTransaction.  Both
+    kinds of transactions support select().
+
+    Transactions are not thread-safe.
+    """
+
     OPEN_RO          : Literal[1] = 1
     OPEN_RW          : Literal[2] = 2
     COMMIT_AMBIGUOUS : Literal[3] = 3
@@ -297,11 +354,31 @@ class Transaction(_Resource):
     __slots__ = ("_state", "_connection")
 
     def __init__(self, connection: Connection, initial_state: Literal[1, 2]) -> None:
+        """
+        Create a transaction.
+
+        Parameters:
+
+         - connection    -- the underlying connection
+         - initial_state -- the initial state of the transaction
+        """
+
         super().__init__()
         self._state: Literal[1, 2, 3, 4, 5] = initial_state
         self._connection = connection
 
     def select(self, sql: str, argv: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+        """
+        Read data out of the database.
+
+        Parameters:
+
+         - sql  -- a SELECT, WITH-SELECT, or VALUES statement
+         - argv -- values to bind to '?' placeholders in the given sql
+
+        Returns the read rows as a list of tuples.
+        """
+
         if self._state not in Transaction.OPEN:
             raise Exception("Transaction is not open")
         if not _SELECT_START_REGEX.match(sql):
@@ -318,9 +395,24 @@ class Transaction(_Resource):
 
 
 class ReadTransaction(Transaction):
+    """
+    A read-only transaction.
+    """
+
     __slots__ = ()
 
     def __init__(self, connection: Connection) -> None:
+        """
+        Create a read-only transaction.
+
+        Parameters:
+
+         - connection -- the connection to use
+
+        This constructor will block until there are no open writers on the
+        connection.  Multiple read transactions can proceed in parallel.
+        """
+
         _logger.debug("Opening ReadTransaction...")
         start = time.time()
         super().__init__(connection, Transaction.OPEN_RO)
@@ -348,9 +440,24 @@ class ReadTransaction(Transaction):
 
 
 class WriteTransaction(Transaction):
+    """
+    A read/write transaction.
+    """
+
     __slots__ = ()
 
     def __init__(self, connection: Connection) -> None:
+        """
+        Create a read/write transaction.
+
+        Parameters:
+
+         - connection -- the connection to use
+
+        This constructor will block until there are no open readers or
+        writers on the connection.
+        """
+
         _logger.debug("Opening WriteTransaction...")
         start = time.time()
         super().__init__(connection, Transaction.OPEN_RW)
@@ -368,6 +475,18 @@ class WriteTransaction(Transaction):
             raise
 
     def exec(self, sql: str, argv: tuple[Any, ...] = ()) -> int:
+        """
+        Execute an arbitrary SQL statement.
+
+        Parameters:
+
+         - sql  -- a SELECT, WITH-SELECT, or VALUES statement
+         - argv -- values to bind to '?' placeholders in the given sql
+
+        Returns the number of modified rows.  If the statement was not an
+        INSERT, UPDATE, or DELETE then the number is arbitrary.
+        """
+
         if self._state not in Transaction.OPEN:
             raise Exception("Transaction is not open")
         _logger.debug("Executing %r...", sql)
@@ -379,6 +498,19 @@ class WriteTransaction(Transaction):
         return result
 
     def commit(self) -> None:
+        """
+        Commit this transaction, making it durable and visible to subsequent
+        readers.
+
+        This method should rarely be called directly; if you use a
+        WriteTransaction as a context manager then it will automatically commit
+        at the end of the block (provided the block exits normally).
+
+        But, it is OK to call this method directly, even if this object is used
+        as a context manager, in which case it simply commits early.  Calling
+        this method also closes the transaction, making it unusable.
+        """
+
         if self._state not in Transaction.OPEN:
             raise Exception("Transaction is not open")
         _logger.debug("Committing...")
@@ -396,6 +528,11 @@ class WriteTransaction(Transaction):
             super().__exit__(exc_type, exc_val, exc_tb)
 
     def close(self) -> None:
+        """
+        Close the transaction without committing ("abort" or "rollback").
+        No-op if the transaction has already committed.
+        """
+
         try:
             if self._state in (Transaction.OPEN_RW, Transaction.COMMIT_AMBIGUOUS):
                 _logger.debug("Rolling back WriteTransaction...")
