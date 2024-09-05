@@ -55,6 +55,14 @@ import time
 import re
 
 
+__all__ = [
+    'Connection',
+    'Transaction',
+    'ReadTransaction',
+    'WriteTransaction',
+]
+
+
 _logger = logging.getLogger(__name__)
 _IDLE_MODE: Literal[0] = 0
 _READ_MODE: Literal[1] = 1
