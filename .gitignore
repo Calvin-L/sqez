@@ -11,3 +11,6 @@ __pycache__
 *_TTrace_*.bin
 .tlacache
 states
+
+# Etc.
+/.mk
