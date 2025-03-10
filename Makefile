@@ -66,7 +66,7 @@ $(MK_DIR)/test.ok: Makefile pyproject.toml $(SRC) $(TEST_SRC)
 	pytest
 	@touch '$@'
 
-$(MK_DIR)/dist.ok: Makefile pyproject.toml $(MK_DIR)/tla.ok $(MK_DIR)/typecheck.ok $(MK_DIR)/test.ok
+$(MK_DIR)/dist.ok: Makefile pyproject.toml README.md LICENSE $(MK_DIR)/tla.ok $(MK_DIR)/typecheck.ok $(MK_DIR)/test.ok
 	$(RM) -r dist
 	python3 -m build
 	@touch '$@'
