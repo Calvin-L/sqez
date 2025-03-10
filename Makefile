@@ -9,6 +9,7 @@ help:
 	@echo '---- Shortcuts for big tasks ----'
 	@echo '  * make dist      : build a distribution'
 	@echo '  * make clean     : delete all generated files'
+	@echo '  * make deploy    : deploy release to PyPI'
 	@echo '---- Shortcuts for small tasks ----'
 	@echo '  * make tla       : check TLA+ designs'
 	@echo '  * make typecheck : run mypy to typecheck'
@@ -32,6 +33,10 @@ typecheck: $(MK_DIR)/typecheck.ok
 test: $(MK_DIR)/test.ok
 check: tla typecheck test
 dist: $(MK_DIR)/dist.ok
+
+.PHONY: deploy
+deploy: $(MK_DIR)/dist.ok
+	python3 -m twine upload dist/*
 
 $(MK_DIR)/Phaser_mc.ok: Makefile designs/Phaser.tla
 	@mkdir -p '$(MK_DIR)'

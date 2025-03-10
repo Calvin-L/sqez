@@ -6,8 +6,13 @@ SQLite Easy Mode (SQEZ) is a thin thread-safe wrapper around Python's [`sqlite3`
 
 ## Quickstart
 
-SQEZ is not (yet) available in PyPI.
-You can use it by copying `src/sqez/` to your project.
+[SQEZ is available in PyPI](https://pypi.org/project/sqez/):
+
+```
+python3 -m pip install sqez
+```
+
+Example usage:
 
 ```python
 import sqez
